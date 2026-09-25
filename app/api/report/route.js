@@ -1,26 +1,38 @@
-// The report button calls this. It does nothing yet, on purpose.
-//
-// What it will do once you finish it: take the corroborated clues, send them to
-// Claude, and hand back { report: "..." } for the page to show.
-//
-// The key for that call comes from process.env, which reads .env.local on your
-// laptop and Vercel's environment variables once it is deployed. The key never
-// appears in this file, and this file is the only thing that ever sees it: the
-// browser calls this route, and this route calls Claude.
+import { callClaude } from "../../../lib/claude";
+
 export async function POST(request) {
   const { clues } = await request.json();
-  const count = clues?.length ?? 0;
+  const solid = Array.isArray(clues) ? clues : [];
 
-  return Response.json(
-    {
-      error:
-        "No key, no report.\n\n" +
-        `${count} corroborated clue${count === 1 ? "" : "s"} ready and nobody to write them up.\n\n` +
-        "Writing the report means your app talking to Claude, and your app needs " +
-        "its own key to do that. Your Claude subscription pays for you, not for " +
-        "software you wrote.\n\n" +
-        "This is sprint 2.",
-    },
-    { status: 501 }
-  );
+  if (solid.length === 0) {
+    return Response.json(
+      {
+        error:
+          "Nothing corroborated yet, so there is nothing to write up. Mark a clue " +
+          "Corroborated or Key evidence first.",
+      },
+      { status: 422 }
+    );
+  }
+
+  const bulletList = solid
+    .map((c) => `- ${c.what}${c.source ? ` (source: ${c.source})` : ""}`)
+    .join("\n");
+
+  const result = await callClaude({
+    system:
+      'You write short police-style incident reports for a training exercise called ' +
+      '"Affaire Apollon," about the October 2025 Louvre jewel theft. Write 2 to 4 plain ' +
+      'paragraphs of prose, in a formal but readable tone, using only the evidence given ' +
+      "to you. Do not invent facts beyond what's listed. Do not use markdown, headers, or " +
+      "bullet points — prose paragraphs only, separated by a blank line.",
+    prompt: `Corroborated evidence:\n\n${bulletList}`,
+    maxTokens: 700,
+  });
+
+  if (!result.ok) {
+    return Response.json({ error: result.error }, { status: 502 });
+  }
+
+  return Response.json({ report: result.text.trim() });
 }

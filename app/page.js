@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 const STATUSES = ["Unverified", "Corroborated", "Dead end", "Key evidence"];
 const SOUNDTRACK = "https://suno.com/song/c51ec285-50d8-4657-aef6-4f6144423f94";
@@ -26,9 +27,8 @@ export function CaseFile({ text }) {
 }
 
 export default function LeDossier() {
-  // Every clue you add lives in this one variable. This variable lives in the
-  // browser's memory, which lasts exactly as long as the page does. Sprint 1.
   const [clues, setClues] = useState([]);
+  const [loadingClues, setLoadingClues] = useState(true);
 
   const [tab, setTab] = useState("dossier");
   const [what, setWhat] = useState("");
@@ -41,22 +41,34 @@ export default function LeDossier() {
   const [copied, setCopied] = useState(false);
   const audio = useRef(null);
 
+  useEffect(() => {
+    supabase
+      .from("clues")
+      .select("*")
+      .order("created_at", { ascending: true })
+      .then(({ data, error }) => {
+        if (!error) setClues(data);
+        setLoadingClues(false);
+      });
+  }, []);
+
   function toggleTrack() {
     const el = audio.current;
     if (!el) return;
     if (el.paused) { el.play(); setPlaying(true); } else { el.pause(); setPlaying(false); }
   }
 
-  function addClue(event) {
+  async function addClue(event) {
     event.preventDefault();
     if (!what.trim()) return;
-    setClues([...clues, newClue(what, source || "unattributed")]);
+    const { data, error } = await supabase
+      .from("clues")
+      .insert({ what: what.trim(), source: (source || "unattributed").trim() })
+      .select()
+      .single();
+    if (!error) setClues([...clues, data]);
     setWhat("");
     setSource("");
-  }
-
-  function newClue(text, from) {
-    return { id: crypto.randomUUID(), what: text.trim(), source: from.trim(), status: "Unverified" };
   }
 
   async function extractFromLink(event) {
@@ -71,13 +83,29 @@ export default function LeDossier() {
     });
     const data = await response.json();
     if (data.clues) {
-      setClues([...clues, ...data.clues.map((c) => newClue(c.what, c.source || link.trim()))]);
+      const rows = data.clues.map((c) => ({
+        what: c.what,
+        source: c.source || link.trim(),
+        status: "Unverified",
+      }));
+      const { data: inserted, error } = await supabase.from("clues").insert(rows).select();
+      if (!error) setClues([...clues, ...inserted]);
       setLink("");
     } else {
       setTab("rapport");
       setReport({ stub: true, text: data.error });
     }
     setBusy("");
+  }
+
+  async function updateStatus(id, status) {
+    setClues(clues.map((c) => (c.id === id ? { ...c, status } : c)));
+    await supabase.from("clues").update({ status }).eq("id", id);
+  }
+
+  async function discardClue(id) {
+    setClues(clues.filter((c) => c.id !== id));
+    await supabase.from("clues").delete().eq("id", id);
   }
 
   async function publish() {
@@ -177,7 +205,9 @@ export default function LeDossier() {
               ))}
             </div>
 
-            {shown.length === 0 ? (
+            {loadingClues ? (
+              <p className="empty">Loading the case file…</p>
+            ) : shown.length === 0 ? (
               <p className="empty">
                 {clues.length === 0
                   ? "The evidence board is empty. What does the room remember?"
@@ -194,16 +224,14 @@ export default function LeDossier() {
                     <select
                       className="status"
                       value={clue.status}
-                      onChange={(e) =>
-                        setClues(clues.map((c) => (c.id === clue.id ? { ...c, status: e.target.value } : c)))
-                      }
+                      onChange={(e) => updateStatus(clue.id, e.target.value)}
                       aria-label="Status"
                     >
                       {STATUSES.map((s) => (
                         <option key={s}>{s}</option>
                       ))}
                     </select>
-                    <button className="btn quiet" onClick={() => setClues(clues.filter((c) => c.id !== clue.id))}>
+                    <button className="btn quiet" onClick={() => discardClue(clue.id)}>
                       Discard
                     </button>
                   </li>
